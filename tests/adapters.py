@@ -6,6 +6,8 @@ from typing import IO, Any, BinaryIO
 
 import numpy.typing as npt
 import torch
+import regex as re
+from cs336_basics import _cs336_ops
 from jaxtyping import Bool, Float, Int
 from torch import Tensor
 
@@ -561,6 +563,66 @@ def get_tokenizer(
     """
     raise NotImplementedError
 
+def find_chunk_boundaries(
+    file: BinaryIO,
+    desired_num_chunks: int,
+    split_special_tokens: list[bytes],
+) -> list[int]:
+    """
+    Chunk the file into parts that can be counted independently.
+    A boundary is placed at the earliest position (at or after the uniform guess)
+    where *any* of the given special tokens starts, so any special token can be
+    used to split chunks. May return fewer chunks if the boundaries end up overlapping.
+    """
+    assert all(isinstance(t, bytes) for t in split_special_tokens), (
+        "Must represent special tokens as bytestrings"
+    )
+    assert all(len(t) > 0 for t in split_special_tokens), "Special tokens must be non-empty"
+    assert len(split_special_tokens) > 0, "Must provide at least one special token"
+
+    # Get total file size in bytes
+    file.seek(0, os.SEEK_END)
+    file_size = file.tell()
+    file.seek(0)
+
+    chunk_size = file_size // desired_num_chunks
+
+    # Initial guesses for chunk boundary locations, uniformly spaced
+    # Chunks start on previous index, don't include last index
+    chunk_boundaries = [i * chunk_size for i in range(desired_num_chunks + 1)]
+    chunk_boundaries[-1] = file_size
+
+    mini_chunk_size = 4096  # Read ahead by 4k bytes at a time
+    # Read `max_token_len - 1` extra bytes so a special token never gets missed
+    # just because it straddles two consecutive mini chunks.
+    max_special_token_len = max(len(t) for t in split_special_tokens)
+    read_size = mini_chunk_size + max_special_token_len - 1
+
+    for boundary_index in range(1, len(chunk_boundaries) - 1):
+        initial_position = chunk_boundaries[boundary_index]
+        file.seek(initial_position)  # Start at boundary guess
+        while True:
+            mini_chunk = file.read(read_size)  # Read a mini chunk
+
+            # If EOF, this boundary should be at the end of the file
+            if mini_chunk == b"":
+                chunk_boundaries[boundary_index] = file_size
+                break
+
+            # Find the earliest occurrence of any special token in the mini chunk
+            found_at = -1
+            for special_token in split_special_tokens:
+                position = mini_chunk.find(special_token)
+                if position != -1 and (found_at == -1 or position < found_at):
+                    found_at = position
+            if found_at != -1:
+                chunk_boundaries[boundary_index] = initial_position + found_at
+                break
+            initial_position += mini_chunk_size
+
+    # Make sure all boundaries are unique, but might be fewer than desired_num_chunks
+    return sorted(set(chunk_boundaries))
+
 
 def run_train_bpe(
     input_path: str | os.PathLike,
@@ -589,4 +651,27 @@ def run_train_bpe(
                 representing that <token1> was merged with <token2>.
                 Merges are ordered by order of creation.
     """
-    raise NotImplementedError
+    # PAT：GPT-2 使用的 pre-tokenization 正则。
+    PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
+    # Pre-tokenization 必须用 Python 的 regex：PAT 里的 \p{L}/\p{N} 是 Unicode
+    # 属性转义，C++ std::regex 不支持。这里只负责切出 pre-token，统计交给 C++。
+    pretokens: list[str] = []
+    with open(input_path, "rb") as f:
+        num_chunks = 4
+        # Split on any of the given special tokens; an empty list is a caller error
+        # and is rejected by find_chunk_boundaries.
+        split_special_tokens = [t.encode("utf-8") for t in special_tokens]
+        boundaries = find_chunk_boundaries(f, num_chunks, split_special_tokens)
+
+        for start, end in zip(boundaries[:-1], boundaries[1:]):
+            f.seek(start)
+            chunk = f.read(end - start).decode("utf-8", errors="ignore")
+
+            # 先在 special token 处切开，再对每个片段跑 pre-tokenization，收集结果。
+            special_token_pattern = "|".join(re.escape(token) for token in special_tokens)
+            segments = re.split(special_token_pattern, chunk)
+
+            for segment in segments:
+                pretokens.extend(re.findall(PAT, segment))
+
+    return _cs336_ops.train_bpe(pretokens, vocab_size, special_tokens)

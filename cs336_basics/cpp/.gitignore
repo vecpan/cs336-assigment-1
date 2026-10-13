@@ -1,0 +1,9 @@
+# CMake / ninja 构建目录（仓库根的 .gitignore 只挡了顶层 build/，
+# 这里再显式挡一层，避免以后调整目录结构时漏掉）
+build/
+cmake-build-*/
+
+# 编译产物会落到包目录 cs336_basics/ 下（见 CMakeLists.txt 的
+# LIBRARY_OUTPUT_DIRECTORY），仓库根 .gitignore 的 *.so 规则已经覆盖，
+# 这里重复声明一次是为了让本目录自解释。
+../_cs336_ops*.so
