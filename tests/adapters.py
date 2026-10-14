@@ -8,6 +8,7 @@ import numpy.typing as npt
 import torch
 import regex as re
 from cs336_basics import _cs336_ops
+from cs336_basics.tokenizer import BpeTokenizer
 from jaxtyping import Bool, Float, Int
 from torch import Tensor
 
@@ -561,7 +562,7 @@ def get_tokenizer(
     Returns:
         A BPE tokenizer that uses the provided vocab, merges, and special tokens.
     """
-    raise NotImplementedError
+    return BpeTokenizer(vocab, merges, special_tokens)
 
 def find_chunk_boundaries(
     file: BinaryIO,
