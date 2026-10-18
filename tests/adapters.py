@@ -8,6 +8,12 @@ import numpy.typing as npt
 import torch
 import regex as re
 from cs336_basics import _cs336_ops
+from cs336_basics.embedding import Embedding
+from cs336_basics.linear import Linear
+from cs336_basics.rms_norm import RMSNorm
+from cs336_basics.rope import RotaryPositionalEmbedding
+from cs336_basics.softmax import Softmax
+from cs336_basics.swiglu import SwiGLU
 from cs336_basics.tokenizer import BpeTokenizer
 from jaxtyping import Bool, Float, Int
 from torch import Tensor
@@ -31,8 +37,16 @@ def run_linear(
     Returns:
         Float[Tensor, "... d_out"]: The transformed output of your linear module.
     """
-
-    raise NotImplementedError
+    # `weights` already has the (d_out, d_in) layout expected by the module, so loading
+    # it through a state dict both assigns it and asserts that the shapes match.
+    # Building the layer on the weights' own device/dtype keeps the output where the
+    # caller expects it: `load_state_dict` copies into the existing parameters, so a
+    # default-constructed module would quietly produce CPU/float32 activations instead.
+    linear_layer = Linear(in_features=d_in, out_features=d_out, device=weights.device, dtype=weights.dtype)
+    linear_layer.load_state_dict({"weight": weights})
+    # Beware of the handout naming here: `in_features` is the batched input tensor,
+    # while the width of the layer input is `d_in`.
+    return linear_layer(in_features)
 
 
 def run_embedding(
@@ -53,8 +67,14 @@ def run_embedding(
     Returns:
         Float[Tensor, "... d_model"]: Batch of embeddings returned by your Embedding layer.
     """
-
-    raise NotImplementedError
+    # Same pattern as `run_linear`: build the table with the requested shape (on the
+    # weights' device/dtype), then let `load_state_dict` copy in `weights` and validate
+    # the shape on the way.
+    embedding_layer = Embedding(
+        num_embeddings=vocab_size, embedding_dim=d_model, device=weights.device, dtype=weights.dtype
+    )
+    embedding_layer.load_state_dict({"weight": weights})
+    return embedding_layer(token_ids)
 
 
 def run_swiglu(
@@ -79,14 +99,12 @@ def run_swiglu(
     Returns:
         Float[Tensor, "... d_model"]: Output embeddings of the same shape as the input embeddings.
     """
-    # Example:
-    # If your state dict keys match, you can use `load_state_dict()`
-    # swiglu.load_state_dict(weights)
-    # You can also manually assign the weights
-    # swiglu.w1.weight.data = w1_weight
-    # swiglu.w2.weight.data = w2_weight
-    # swiglu.w3.weight.data = w3_weight
-    raise NotImplementedError
+    # Building the module on `w1_weight`'s device/dtype keeps the result where the
+    # caller expects it; `load_state_dict` then copies the three matrices into the
+    # `w1`/`w2`/`w3` submodules and validates their shapes on the way.
+    swiglu_layer = SwiGLU(d_model=d_model, d_ff=d_ff, device=w1_weight.device, dtype=w1_weight.dtype)
+    swiglu_layer.load_state_dict({"w1.weight": w1_weight, "w2.weight": w2_weight, "w3.weight": w3_weight})
+    return swiglu_layer(in_features)
 
 
 def run_scaled_dot_product_attention(
@@ -203,7 +221,10 @@ def run_rope(
     Returns:
         Float[Tensor, " ... sequence_length d_k"]: Tensor with RoPEd input.
     """
-    raise NotImplementedError
+    # Same pattern as the modules above: build the layer on the input's device, then
+    # call it (instead of `forward()`) so any registered forward hooks still run.
+    rope_layer = RotaryPositionalEmbedding(theta=theta, d_k=d_k, max_seq_len=max_seq_len, device=in_query_or_key.device)
+    return rope_layer(in_query_or_key, token_positions)
 
 
 def run_transformer_block(
@@ -381,7 +402,13 @@ def run_rmsnorm(
         Float[Tensor,"... d_model"]: Tensor of with the same shape as `in_features` with the output of running
         RMSNorm of the `in_features`.
     """
-    raise NotImplementedError
+    # Same pattern as `run_linear`: build the layer with the requested width on the
+    # weights' device/dtype, then let `load_state_dict` copy in `weights` and validate
+    # the shape on the way. `d_model` here is the width of the normalized axis, while
+    # `in_features` is the batched input tensor, not a size.
+    rms_norm_layer = RMSNorm(d_model=d_model, eps=eps, device=weights.device, dtype=weights.dtype)
+    rms_norm_layer.load_state_dict({"weight": weights})
+    return rms_norm_layer(in_features)
 
 
 def run_silu(in_features: Float[Tensor, " ..."]) -> Float[Tensor, " ..."]:
@@ -434,7 +461,11 @@ def run_softmax(in_features: Float[Tensor, " ..."], dim: int) -> Float[Tensor, "
         Float[Tensor, "..."]: Tensor of with the same shape as `in_features` with the output of
         softmax normalizing the specified `dim`.
     """
-    raise NotImplementedError
+    # No weights to load here, so the module only carries the reduction axis and
+    # can be applied straight away. `in_features` is the batched input tensor, not
+    # a size, despite the handout's naming.
+    softmax_layer = Softmax(dim=dim)
+    return softmax_layer(in_features)
 
 
 def run_cross_entropy(
