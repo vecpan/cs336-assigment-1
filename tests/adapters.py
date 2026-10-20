@@ -10,8 +10,10 @@ import regex as re
 from cs336_basics import _cs336_ops
 from cs336_basics.embedding import Embedding
 from cs336_basics.linear import Linear
+from cs336_basics.multihead_self_attention import MultiHeadSelfAttention
 from cs336_basics.rms_norm import RMSNorm
 from cs336_basics.rope import RotaryPositionalEmbedding
+from cs336_basics.scaled_dot_product_attention import ScaledDotProductAttention
 from cs336_basics.softmax import Softmax
 from cs336_basics.swiglu import SwiGLU
 from cs336_basics.tokenizer import BpeTokenizer
@@ -125,7 +127,10 @@ def run_scaled_dot_product_attention(
     Returns:
         Float[Tensor, " ... queries d_v"]: Output of SDPA
     """
-    raise NotImplementedError
+    # The module is stateless: it reads `d_k` from `Q` and normalizes over the key
+    # axis, so it is constructed without arguments and applies the scaling internally.
+    attention_layer = ScaledDotProductAttention()
+    return attention_layer(query=Q, key=K, value=V, mask=mask)
 
 
 def run_multihead_self_attention(
@@ -159,7 +164,21 @@ def run_multihead_self_attention(
         Float[Tensor, " ... sequence_length d_model"]: Tensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
-    raise NotImplementedError
+    attention_layer = MultiHeadSelfAttention(
+        d_model=d_model,
+        num_heads=num_heads,
+        device=q_proj_weight.device,
+        dtype=q_proj_weight.dtype,
+    )
+    # The module keeps the three projections in one (3, d_model, d_model) parameter,
+    # so stack the supplied weights in query/key/value order before loading them.
+    attention_layer.load_state_dict(
+        {
+            "qkv_proj_weight": torch.stack([q_proj_weight, k_proj_weight, v_proj_weight]),
+            "output_proj_weight": o_proj_weight,
+        }
+    )
+    return attention_layer(in_features)
 
 
 def run_multihead_self_attention_with_rope(
@@ -199,7 +218,26 @@ def run_multihead_self_attention_with_rope(
         Float[Tensor, " ... sequence_length d_model"]: Tensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
-    raise NotImplementedError
+    rope = RotaryPositionalEmbedding(
+        theta=theta,
+        d_k=d_model // num_heads,
+        max_seq_len=max_seq_len,
+        device=q_proj_weight.device,
+    )
+    attention_layer = MultiHeadSelfAttention(
+        d_model=d_model,
+        num_heads=num_heads,
+        device=q_proj_weight.device,
+        dtype=q_proj_weight.dtype,
+        rope=rope,
+    )
+    attention_layer.load_state_dict(
+        {
+            "qkv_proj_weight": torch.stack([q_proj_weight, k_proj_weight, v_proj_weight]),
+            "output_proj_weight": o_proj_weight,
+        }
+    )
+    return attention_layer(in_features, token_positions)
 
 
 def run_rope(

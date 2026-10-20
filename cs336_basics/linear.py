@@ -34,19 +34,40 @@ class Linear(nn.Module):
         super().__init__()
         self.in_features = in_features
         self.out_features = out_features
+        # Stored as (out_features, in_features) so that the "weight" entry of the state
+        # dict matches the reference PyTorch layout used by the tests.
+        self.weight = nn.Parameter(torch.empty(out_features, in_features, device=device, dtype=dtype))
+        self.init_weight(self.weight)
+
+    @staticmethod
+    def init_weight(weight: torch.Tensor) -> torch.Tensor:
+        """Fill `weight` in place with the truncated-normal Linear initialization.
+
+        The fan-in and fan-out sizes are read from the last two dimensions, so the
+        same helper can initialize a stacked tensor such as the (3, d_model, d_model)
+        QKV projection used by multi-head self-attention.
+
+        Args:
+            weight: Tensor of shape (..., out_features, in_features).
+
+        Returns:
+            The same tensor, initialized in place.
+
+        Raises:
+            AssertionError: If `weight` has fewer than 2 dimensions.
+        """
+        assert weight.ndim >= 2, f"expected at least 2 dims, got shape {tuple(weight.shape)}"
+        out_features, in_features = weight.shape[-2:]
         # Xavier-style scale averaged over fan-in and fan-out, as specified by the
         # assignment for the truncated normal initialization.
         std = math.sqrt(2.0 / (in_features + out_features))
-        # Stored as (out_features, in_features) so that the "weight" entry of the state
-        # dict matches the reference PyTorch layout used by the tests.
-        initial_weight = nn.init.trunc_normal_(
-            torch.empty(out_features, in_features, device=device, dtype=dtype),
+        return nn.init.trunc_normal_(
+            weight,
             mean=0.0,
             std=std,
             a=-TRUNCATION_STD_MULTIPLIER * std,
             b=TRUNCATION_STD_MULTIPLIER * std,
         )
-        self.weight = nn.Parameter(initial_weight)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Apply the layer to the trailing dimension of `x`.
